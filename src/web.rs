@@ -2,18 +2,20 @@
 
 #![allow(clippy::uninlined_format_args)]
 
+use std::convert::TryInto;
+use std::marker::PhantomData;
+use std::num::NonZeroU32;
+
 use js_sys::Object;
-use raw_window_handle::WebWindowHandle;
+use raw_window_handle::{HasRawWindowHandle, RawWindowHandle, WebWindowHandle};
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::ImageData;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
 use crate::error::SwResultExt;
+use crate::Context;
 use crate::{Rect, SoftBufferError};
-use std::convert::TryInto;
-use std::marker::PhantomData;
-use std::num::NonZeroU32;
 
 /// Display implementation for the web platform.
 ///
@@ -223,7 +225,11 @@ pub trait SurfaceExtWeb: Sized {
     /// # Errors
     /// - If the canvas was already controlled by an `OffscreenCanvas`.
     /// - If a another context then "2d" was already created for this canvas.
-    fn from_canvas(canvas: HtmlCanvasElement) -> Result<Self, SoftBufferError>;
+    fn from_canvas<W: HasRawWindowHandle>(
+        context: &Context,
+        window: &W,
+        canvas: HtmlCanvasElement,
+    ) -> Result<Self, SoftBufferError>;
 
     /// Creates a new instance of this struct, using the provided [`HtmlCanvasElement`].
     ///
@@ -233,7 +239,38 @@ pub trait SurfaceExtWeb: Sized {
 }
 
 impl SurfaceExtWeb for crate::Surface {
-    fn from_canvas(canvas: HtmlCanvasElement) -> Result<Self, SoftBufferError> {
+    fn from_canvas<W: HasRawWindowHandle>(
+        context: &Context,
+        window: &W,
+        canvas: HtmlCanvasElement,
+    ) -> Result<Self, SoftBufferError> {
+        // Just to make sure the context was properly created
+        let _ = context;
+
+        let handle = window.raw_window_handle();
+
+        let RawWindowHandle::Web(web_handle) = handle else {
+            return Err(SoftBufferError::UnsupportedWindowPlatform {
+                human_readable_window_platform_name: crate::window_handle_type_name(
+                    &handle,
+                ),
+                human_readable_display_platform_name: context.context_impl.variant_name(),
+                window_handle: handle,
+            });
+        };
+
+        let attribute_data_raw_handle = canvas
+            .get_attribute("data-raw-handle")
+            .swbuf_err("No canvas found with the given id")?;
+
+        // Sanity check: the `data-raw-handle` attribute should match the `web_handle.id`
+        if attribute_data_raw_handle != web_handle.id.to_string() {
+            return Err(SoftBufferError::PlatformError(
+                Some("Raw handle ID mismatch".to_owned()),
+                None,
+            ));
+        }
+
         let imple = crate::SurfaceDispatch::Web(WebImpl::from_canvas(canvas)?);
 
         Ok(Self {
